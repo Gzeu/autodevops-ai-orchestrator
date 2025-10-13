@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: autodevops-ai-orchestrator
+    env: node
+    plan: free
+    region: frankfurt # EU region pentru latenta mai mica
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: AI_MODEL
+        value: gpt-3.5-turbo
+      - key: MAX_CONCURRENT_TASKS
+        value: 3
+      - key: TASK_TIMEOUT
+        value: 300000
+    disk:
+      name: autodevops-storage
+      mountPath: /opt/render/project/src/storage
+      sizeGB: 1
+
+databases:
+  - name: autodevops-mongodb
+    databaseName: autodevops
+    user: autodevops_user
+    plan: free # MongoDB Atlas integration
+    region: frankfurt
