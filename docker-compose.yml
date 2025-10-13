@@ -1,84 +1,217 @@
+# 🐳 AutoDevOps AI Orchestrator - Complete Development Stack
+# Includes: App, PostgreSQL, Redis, Grafana, Prometheus, Jupyter, and more
+
 version: '3.8'
 
 services:
+  # 🤖 Main Application
   app:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: autodevops-ai-app
+    restart: unless-stopped
     ports:
       - "3001:3001"
+      - "8080:8080"  # Admin panel
     environment:
       - NODE_ENV=development
+      - DATABASE_URL=postgresql://postgres:devpass@postgres:5432/autodevops
+      - REDIS_URL=redis://redis:6379
       - PORT=3001
+      - HOSTNAME=0.0.0.0
+      - LOG_LEVEL=debug
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./logs:/app/logs
-      - ./test-results:/app/test-results
-    depends_on:
-      - redis
-      - postgres
+      - ./uploads:/app/uploads
+      - ./temp:/app/temp
     networks:
       - autodevops-network
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - autodevops-network
-    restart: unless-stopped
-
+  # 🗄️ PostgreSQL Database
   postgres:
     image: postgres:15-alpine
+    container_name: autodevops-postgres
+    restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
-      - POSTGRES_DB=autodevops_ai
+      - POSTGRES_DB=autodevops
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=devpass
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
     networks:
       - autodevops-network
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d autodevops"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
+  # 🗄️ Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: autodevops-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass devpass
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - autodevops-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  # 📊 Prometheus Monitoring
   prometheus:
     image: prom/prometheus:latest
+    container_name: autodevops-prometheus
+    restart: unless-stopped
     ports:
       - "9090:9090"
-    volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/etc/prometheus/console_libraries'
       - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
     networks:
       - autodevops-network
-    restart: unless-stopped
+    depends_on:
+      - app
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
+  # 📈 Grafana Dashboard
   grafana:
     image: grafana/grafana:latest
+    container_name: autodevops-grafana
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./config/grafana:/etc/grafana/provisioning
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
     networks:
       - autodevops-network
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 📈 Node Exporter (System Metrics)
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: autodevops-node-exporter
     restart: unless-stopped
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - autodevops-network
 
+  # 📆 Jupyter Notebook (Data Science)
+  jupyter:
+    image: jupyter/datascience-notebook:latest
+    container_name: autodevops-jupyter
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=devtoken123
+    volumes:
+      - jupyter_data:/home/jovyan/work
+      - ./notebooks:/home/jovyan/notebooks
+      - ./data:/home/jovyan/data
+    networks:
+      - autodevops-network
+    depends_on:
+      - postgres
+      - redis
+
+  # 📊 pgAdmin (Database Management)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: autodevops-pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@autodevops.com
+      - PGADMIN_DEFAULT_PASSWORD=admin123
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - autodevops-network
+    depends_on:
+      - postgres
+
+# 💾 Persistent Volumes
 volumes:
-  redis_data:
   postgres_data:
-  prometheus_data:
+    driver: local
+  redis_data:
+    driver: local
   grafana_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  jupyter_data:
+    driver: local
+  pgadmin_data:
+    driver: local
 
+# 🌐 Custom Network
 networks:
   autodevops-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
